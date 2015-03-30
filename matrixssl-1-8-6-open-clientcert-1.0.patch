@@ -1,0 +1,1115 @@
+diff -uNr --exclude doc --exclude httpsClient ../matrixssl-1-8-6-open/examples/httpsClient.c matrixssl/examples/httpsClient.c
+--- ../matrixssl-1-8-6-open/examples/httpsClient.c	2008-08-27 01:36:06.000000000 +0300
++++ matrixssl/examples/httpsClient.c	2009-04-03 22:00:34.000000000 +0300
+@@ -46,6 +46,8 @@
+ #define HTTPS_IP	"127.0.0.1"
+ 
+ static char CAfile[] = "CAcertSrv.pem";
++static char keyfile[] = "privkeySrv.pem";
++static char certfile[] = "certSrv.pem";
+ 
+ 
+ #define ITERATIONS	100 /* How many individual connections to make */
+@@ -162,7 +164,7 @@
+ 		fprintf(stderr, "matrixSslOpen failed, exiting...");
+ 	}
+ 	sessionId = NULL;
+-	if (matrixSslReadKeys(&keys, NULL, NULL, NULL, CAfile) < 0) {
++	if (matrixSslReadKeys(&keys, certfile, keyfile, NULL, CAfile) < 0) {
+ 		goto promptAndExit;
+ 	}
+ /*
+diff -uNr --exclude doc --exclude httpsClient ../matrixssl-1-8-6-open/examples/httpsReflector.c matrixssl/examples/httpsReflector.c
+--- ../matrixssl-1-8-6-open/examples/httpsReflector.c	2008-08-27 01:36:06.000000000 +0300
++++ matrixssl/examples/httpsReflector.c	2009-04-03 19:57:36.000000000 +0300
+@@ -41,6 +41,7 @@
+ #define HTTPS_PORT	4433
+ static char keyfile[] = "privkeySrv.pem";
+ static char certfile[] = "certSrv.pem";
++static char CAfile[] = "CAcertSrv.pem";
+ 
+ static const char responseHdr[] = "HTTP/1.0 200 OK\r\n"
+ 		"Server: PeerSec Networks MatrixSSL\r\n"
+@@ -68,6 +69,42 @@
+ 
+ /******************************************************************************/
+ /*
++Stub for a server-level certificate validator.  Just using
++the default validation value here.
++*/
++static int certChecker(sslCertInfo_t *cert, void *arg)
++{
++  sslCertInfo_t	*next;
++  sslKeys_t		*keys;
++  /*
++  Make sure we are checking the last cert in the chain
++  */
++  next = cert;
++  keys = arg;
++  while (next->next != NULL) {
++    next = next->next;
++  }
++#if ENFORCE_CERT_VALIDATION
++  /*
++  This case passes the true RSA authentication status through
++  */
++  return next->verified;
++#else
++  /*
++  This case passes an authenticated server through, but flags a
++  non-authenticated server correctly.  The user can call the
++  matrixSslGetAnonStatus later to see the status of this connection.
++  */
++  if (next->verified != 1) {
++    return SSL_ALLOW_ANON_CONNECTION;
++  }
++  return next->verified;
++#endif /* ENFORCE_CERT_VALIDATION */
++}		
++
++
++/******************************************************************************/
++/*
+ 	This example application acts as an https server that accepts incoming
+ 	client requests and reflects incoming data back to that client.  
+ */
+@@ -124,7 +161,7 @@
+ /*
+ 	Standard PEM files
+ */
+-	if (matrixSslReadKeys(&keys, certfile, keyfile, NULL, NULL) < 0)  {
++	if (matrixSslReadKeys(&keys, certfile, keyfile, NULL, CAfile) < 0)  {
+ 		fprintf(stderr, "Error reading or parsing %s or %s.\n", 
+ 			certfile, keyfile);
+ 		goto promptAndExit;
+@@ -149,7 +186,11 @@
+ */
+ 	quit = 0;
+ 	again = 0;
+-	flags = 0;
++#ifdef USE_CLIENT_AUTH
++	flags = SSL_FLAGS_CLIENT_AUTH;
++#else  /*USE_CLIENT_AUTH*/
++  flags = 0;
++#endif /*USE_CLIENT_AUTH*/
+ 
+ 	acceptAgain = 1;
+ /*
+@@ -157,7 +198,8 @@
+ */
+ 	while (!quit) {
+ 
+-		if (acceptAgain) {
++		if (acceptAgain) 
++    {
+ /*
+ 			sslAccept creates a new server session
+ */
+@@ -166,7 +208,7 @@
+ 				fprintf(stdout, "Error accepting connection: %d\n", err);
+ 				continue;
+ 			}
+-			if ((rc = sslAccept(&cp, fd, keys, NULL, flags)) != 0) {
++			if ((rc = sslAccept(&cp, fd, keys, certChecker, flags)) != 0) {
+ 				socketShutdown(fd);
+ 				continue;
+ 			}
+diff -uNr --exclude doc --exclude httpsClient ../matrixssl-1-8-6-open/examples/sslSocket.c matrixssl/examples/sslSocket.c
+--- ../matrixssl-1-8-6-open/examples/sslSocket.c	2008-08-28 23:52:02.000000000 +0300
++++ matrixssl/examples/sslSocket.c	2009-04-03 19:57:35.000000000 +0300
+@@ -185,6 +185,10 @@
+ 		sslFreeConnection(&conn);
+ 		return -1;
+ 	}
++
++#ifdef USE_CLIENT_AUTH
++  matrixSslSetCertValidator(conn->ssl, certValidator, keys);
++#endif /* USE_CLIENT_AUTH */
+ /*
+ 	MatrixSSL doesn't provide buffers for data internally.  Define them
+ 	here to support buffered reading and writing for non-blocking sockets.
+diff -uNr --exclude doc --exclude httpsClient ../matrixssl-1-8-6-open/src/crypto/cryptoLayer.h matrixssl/src/crypto/cryptoLayer.h
+--- ../matrixssl-1-8-6-open/src/crypto/cryptoLayer.h	2008-08-29 00:08:36.000000000 +0300
++++ matrixssl/src/crypto/cryptoLayer.h	2009-04-03 19:57:32.000000000 +0300
+@@ -114,7 +114,7 @@
+ /*
+ 	Support for client side SSL
+ */
+-#ifdef USE_CLIENT_SIDE_SSL
++#if defined(USE_CLIENT_SIDE_SSL) || defined(USE_CLIENT_AUTH)
+ #define USE_RSA_PUBLIC_ENCRYPT
+ #endif
+ 
+diff -uNr --exclude doc --exclude httpsClient ../matrixssl-1-8-6-open/src/crypto/matrixCrypto.h matrixssl/src/crypto/matrixCrypto.h
+--- ../matrixssl-1-8-6-open/src/crypto/matrixCrypto.h	2008-08-29 00:09:18.000000000 +0300
++++ matrixssl/src/crypto/matrixCrypto.h	2009-04-03 19:57:32.000000000 +0300
+@@ -123,6 +123,9 @@
+ MATRIXPUBLIC int32 matrixRsaEncryptPub(psPool_t *pool, sslRsaKey_t *key, 
+ 							   unsigned char *in, int32 inlen,
+ 							   unsigned char *out, int32 outlen);
++int32 matrixRsaEncryptPriv(psPool_t *pool, sslRsaKey_t *key, 
++                           unsigned char *in, int32 inlen,
++                           unsigned char *out, int32 outlen);
+ MATRIXPUBLIC int32 matrixRsaDecryptPriv(psPool_t *pool, sslRsaKey_t *key, 
+ 								unsigned char *in, int32 inlen,
+ 								unsigned char *out, int32 outlen);
+diff -uNr --exclude doc --exclude httpsClient ../matrixssl-1-8-6-open/src/crypto/peersec/rsa.c matrixssl/src/crypto/peersec/rsa.c
+--- ../matrixssl-1-8-6-open/src/crypto/peersec/rsa.c	2008-08-27 01:36:06.000000000 +0300
++++ matrixssl/src/crypto/peersec/rsa.c	2009-04-03 19:57:32.000000000 +0300
+@@ -282,6 +282,34 @@
+ 
+ /******************************************************************************/
+ /*
++RSA private encryption.
++Always called by SSL client for client auth in Certificate Verify
++The outlen param must be set to the strength of the key:  key->size
++*/
++int32 matrixRsaEncryptPriv(psPool_t *pool, sslRsaKey_t *key, 
++                          unsigned char *in, int32 inlen,
++                          unsigned char *out, int32 outlen)
++{
++  int32	size;
++
++  size = key->size;
++  if (outlen < size) {
++    return -1;
++  }
++
++  if (sslPadRSA(in, inlen, out, size, RSA_PUBLIC) < 0) {
++    return -1;
++  }
++  if (ssl_rsa_crypt(pool, out, size, out, (uint32*)&outlen, key,
++    RSA_PRIVATE) < 0 || outlen != size) {
++      return -1;
++  }
++  return size;
++}
++
++
++/******************************************************************************/
++/*
+ 	Unpad a value decrypted by RSA, according to PKCS#1 v1.5
+ 	http://www.rsasecurity.com/rsalabs/pkcs/pkcs-1/
+ 	
+diff -uNr --exclude doc --exclude httpsClient ../matrixssl-1-8-6-open/src/matrixConfig.h matrixssl/src/matrixConfig.h
+--- ../matrixssl-1-8-6-open/src/matrixConfig.h	2008-08-29 00:31:58.000000000 +0300
++++ matrixssl/src/matrixConfig.h	2009-04-03 19:57:31.000000000 +0300
+@@ -67,6 +67,7 @@
+ 	Support for client side SSL
+ */
+ #define USE_CLIENT_SIDE_SSL
++#define USE_CLIENT_AUTH
+ #define USE_SERVER_SIDE_SSL
+ 
+ 
+diff -uNr --exclude doc --exclude httpsClient ../matrixssl-1-8-6-open/src/matrixInternal.h matrixssl/src/matrixInternal.h
+--- ../matrixssl-1-8-6-open/src/matrixInternal.h	2008-08-29 00:35:26.000000000 +0300
++++ matrixssl/src/matrixInternal.h	2009-04-03 19:57:34.000000000 +0300
+@@ -176,12 +176,12 @@
+ 	unsigned char	seq[8];
+ 	unsigned char	remSeq[8];
+ 
+-#ifdef USE_CLIENT_SIDE_SSL
++#if defined(USE_CLIENT_SIDE_SSL) || defined(USE_CLIENT_AUTH)
+ 	sslRsaCert_t	*cert;
+ 	int32 (*validateCert)(sslCertInfo_t *certInfo, void *arg);
+ 	void			*validateCertArg;
+ 	int32				certMatch;
+-#endif /* USE_CLIENT_SIDE_SSL */
++#endif /* defined(USE_CLIENT_SIDE_SSL) || defined(USE_CLIENT_AUTH) */
+ 
+ 	sslMd5Context_t		msgHashMd5;
+ 	sslSha1Context_t	msgHashSha1;
+@@ -317,6 +317,11 @@
+ extern int32 sslUpdateHSHash(ssl_t *ssl, unsigned char *in, int32 len);
+ extern int32 sslInitHSHash(ssl_t *ssl);
+ extern int32 sslSnapshotHSHash(ssl_t *ssl, unsigned char *out, int32 senderFlag);
++
++#ifdef USE_CLIENT_AUTH
++extern int32 sslSnapshotCertificateVerifyHSHash(ssl_t *ssl, unsigned char *out);
++#endif /*USE_CLIENT_AUTH*/
++
+ extern int32 sslWritePad(unsigned char *p, unsigned char padLen);
+ extern void sslResetContext(ssl_t *ssl);
+ 
+@@ -343,6 +348,12 @@
+ 								unsigned char *masterSecret,
+ 								unsigned char *out, int32 sender);
+ 
++#ifdef USE_CLIENT_AUTH
++extern int32 sslGenerateCertificateVerifyHash(sslMd5Context_t *md5, sslSha1Context_t *sha1, 
++                                        unsigned char *masterSecret,
++                                        unsigned char *out);
++#endif /*USE_CLIENT_AUTH*/
++
+ extern int32 sslDeriveKeys(ssl_t *ssl);
+ 
+ #ifdef USE_SHA1_MAC
+diff -uNr --exclude doc --exclude httpsClient ../matrixssl-1-8-6-open/src/matrixSsl.c matrixssl/src/matrixSsl.c
+--- ../matrixssl-1-8-6-open/src/matrixSsl.c	2008-08-29 00:39:58.000000000 +0300
++++ matrixssl/src/matrixSsl.c	2009-04-03 19:57:33.000000000 +0300
+@@ -154,11 +154,14 @@
+ 		return -1;
+ 	}
+ #endif
++
++#ifndef USE_CLIENT_AUTH
+ 	if (flags & SSL_FLAGS_CLIENT_AUTH) {
+ 		matrixStrDebugMsg("MatrixSSL lib not compiled with client " \
+ 			"authentication support\n", NULL);
+ 		return -1;
+ 	}
++#endif /*USE_CLIENT_AUTH*/
+ 
+ 	if (flags & SSL_FLAGS_SERVER) {
+ 		if (keys == NULL) {
+@@ -253,12 +256,12 @@
+ #endif /* USE_SERVER_SIDE_SSL */
+ 	ssl->sessionIdLen = 0;
+ 
+-#ifdef USE_CLIENT_SIDE_SSL
++#if defined(USE_CLIENT_SIDE_SSL) || defined(USE_CLIENT_AUTH)
+ 	if (ssl->sec.cert) {
+ 		matrixX509FreeCert(ssl->sec.cert);
+ 		ssl->sec.cert = NULL;
+ 	}
+-#endif /* USE_CLIENT_SIDE_SSL */
++#endif /* defined(USE_CLIENT_SIDE_SSL) || defined(USE_CLIENT_AUTH) */
+ 
+ /*
+ 	Premaster could also be allocated if this DeleteSession is the result
+@@ -326,7 +329,7 @@
+ 	return (ssl->hsState == SSL_HS_DONE) ? 1 : 0;
+ }
+ 
+-#ifdef USE_CLIENT_SIDE_SSL
++#if defined(USE_CLIENT_SIDE_SSL) || defined(USE_CLIENT_AUTH)
+ /******************************************************************************/
+ /*
+ 	Set a custom callback to receive the certificate being presented to the
+@@ -347,7 +350,7 @@
+ 	matrixStrDebugMsg("matrixSslSetCertValidator is not available\n", NULL);
+ 	matrixStrDebugMsg("Library not built for cert validation support\n", NULL);
+ }
+-#endif /* USE_CLIENT_SIDE_SSL */
++#endif /* defined(USE_CLIENT_SIDE_SSL) || defined(USE_CLIENT_AUTH) */
+ 
+ /******************************************************************************/
+ /*
+@@ -392,6 +395,29 @@
+ 	return sslGenerateFinishedHash(&md5, &sha1, ssl->sec.masterSecret,
+ 			out, senderFlag);
+ }
++#ifdef USE_CLIENT_AUTH
++/******************************************************************************/
++/*
++Snapshot is called by both sender and receiver of Certificate Verify message 
++to produce a hash of the preceeding handshake messages for comparison to incoming
++message.
++*/
++int32 sslSnapshotCertificateVerifyHSHash(ssl_t *ssl, unsigned char *out)
++{
++  sslMd5Context_t		md5;
++  sslSha1Context_t	sha1;
++
++  /*
++  Use a backup of the message hash-to-date because we don't want
++  to destroy the state of the handshaking until truly complete
++  */
++  md5 = ssl->sec.msgHashMd5;
++  sha1 = ssl->sec.msgHashSha1;
++
++  return sslGenerateCertificateVerifyHash(&md5, &sha1, ssl->sec.masterSecret,
++    out);
++}
++#endif /*USE_CLIENT_AUTH*/
+ 
+ /******************************************************************************/
+ /*
+@@ -736,7 +762,7 @@
+ }
+ #endif /* USE_SERVER_SIDE_SSL */
+ 
+-#ifdef USE_CLIENT_SIDE_SSL
++#if defined(USE_CLIENT_SIDE_SSL) 
+ /******************************************************************************/
+ /*
+ 	Get session information from the ssl structure and populate the given
+@@ -777,7 +803,7 @@
+ 		psFree(sessionId);
+ 	}
+ }
+-#endif /* USE_CLIENT_SIDE_SSL */
++#endif /* defined(USE_CLIENT_SIDE_SSL)  */
+ 
+ /******************************************************************************/
+ /*
+diff -uNr --exclude doc --exclude httpsClient ../matrixssl-1-8-6-open/src/pki/pkiInternal.h matrixssl/src/pki/pkiInternal.h
+--- ../matrixssl-1-8-6-open/src/pki/pkiInternal.h	2008-08-29 00:13:58.000000000 +0300
++++ matrixssl/src/pki/pkiInternal.h	2009-04-03 19:57:32.000000000 +0300
+@@ -128,6 +128,8 @@
+ 	char	*orgUnit;
+ 	char	*commonName;
+ 	char	hash[SSL_SHA1_HASH_SIZE];
++  int32          DNbinLen;
++  unsigned char *DNbin; 
+ } DNattributes_t;
+ 
+ 
+@@ -197,9 +199,15 @@
+ 
+ typedef struct {
+ 	sslLocalCert_t		cert;
+-#ifdef USE_CLIENT_SIDE_SSL
++#if defined(USE_CLIENT_SIDE_SSL) || defined(USE_CLIENT_AUTH)
+ 	sslRsaCert_t		*caCerts;
+-#endif /* USE_CLIENT_SIDE_SSL */
++#endif /* defined(USE_CLIENT_SIDE_SSL) || defined(USE_CLIENT_AUTH) */
++
++#if defined(USE_CLIENT_SIDE_SSL) && defined(USE_CLIENT_AUTH)
++  // For client authentication on client side
++  sslRsaCert_t	*ownCerts;
++#endif /* defined(USE_CLIENT_SIDE_SSL) && defined(USE_CLIENT_AUTH) */
++
+ } sslKeys_t;
+ 
+ #endif /* USE_X509 */
+diff -uNr --exclude doc --exclude httpsClient ../matrixssl-1-8-6-open/src/pki/rsaPki.c matrixssl/src/pki/rsaPki.c
+--- ../matrixssl-1-8-6-open/src/pki/rsaPki.c	2008-08-29 00:19:10.000000000 +0300
++++ matrixssl/src/pki/rsaPki.c	2009-04-04 02:42:40.000000000 +0300
+@@ -477,6 +477,10 @@
+ 	if (getSequence(&p, len, &llen) < 0) {
+ 		return -1;
+ 	}
++  attribs->DNbinLen = (int32)((p - dnStart) * sizeof(*dnStart)) + llen;
++  attribs->DNbin = psMalloc(pool, attribs->DNbinLen);
++  memcpy(attribs->DNbin, dnStart, attribs->DNbinLen);
++
+ 	dnEnd = p + llen;
+ 
+ 	matrixSha1Init(&hash);
+@@ -665,6 +669,7 @@
+ 	if (dn->organization)	psFree(dn->organization);
+ 	if (dn->orgUnit)		psFree(dn->orgUnit);
+ 	if (dn->commonName)		psFree(dn->commonName);
++	if (dn->DNbin)		psFree(dn->DNbin);
+ }
+ 
+ 
+diff -uNr --exclude doc --exclude httpsClient ../matrixssl-1-8-6-open/src/pki/x509.c matrixssl/src/pki/x509.c
+--- ../matrixssl-1-8-6-open/src/pki/x509.c	2008-08-29 00:21:58.000000000 +0300
++++ matrixssl/src/pki/x509.c	2009-04-03 19:57:33.000000000 +0300
+@@ -153,16 +153,90 @@
+ 			}
+ 			current = next;
+ 		}
+-#ifdef USE_CLIENT_SIDE_SSL
++#if defined(USE_CLIENT_SIDE_SSL) || defined(USE_CLIENT_AUTH)
+ 		if (keys->caCerts) {
+ 			matrixX509FreeCert(keys->caCerts);
+ 		}
+-#endif /* USE_CLIENT_SIDE_SSL */
++#endif /* defined(USE_CLIENT_SIDE_SSL) || defined(USE_CLIENT_AUTH) */
++#if defined(USE_CLIENT_SIDE_SSL) && defined(USE_CLIENT_AUTH)
++    if (keys->ownCerts) {
++      matrixX509FreeCert(keys->ownCerts);
++    }
++#endif /* defined(USE_CLIENT_SIDE_SSL) && defined(USE_CLIENT_AUTH) */
+ 		psFree(keys);
+ 	}
+ }
+ 
+ #ifdef USE_FILE_SYSTEM
++
++#if defined(USE_CLIENT_SIDE_SSL) && defined(USE_CLIENT_AUTH)
++/******************************************************************************/
++/*
++  For client authentication client needs own certificates in parsed form.
++*/
++int32 matrixRsaReadKeysExCertFile(psPool_t *pool, sslKeys_t *lkeys,
++                          const char *certFile)
++{
++  sslRsaCert_t	*currCert, *prevCert = NULL;
++  unsigned char	*cert, *stream;
++  sslChainLen_t	chain;
++  int32			certLen, first, i;
++
++  if (certFile != NULL) {
++    if (matrixX509ReadCert(pool, certFile, &cert, &certLen,
++      &chain) < 0 || cert == NULL) {
++        matrixStrDebugMsg("Error reading own cert files %s\n",
++          (char*)certFile);
++        return -1;
++    }
++
++    stream = cert;
++    i = first = 0;
++    while (chain[i] != 0) {
++      /*
++      Don't allow one bad cert to ruin the whole bunch if possible
++      Will follow same practice here, certificate will be
++      sent to server in original binary form anyway.
++      */
++      if (matrixX509ParseCert(pool, stream, chain[i], &currCert) < 0) {
++        matrixX509FreeCert(currCert);
++        matrixStrDebugMsg("Error parsing own cert %s\n",
++          (char*)certFile);
++        stream += chain[i]; certLen -= chain[i];
++        i++;
++        continue;
++      }
++
++      if (first == 0) {
++        lkeys->ownCerts = currCert;
++      } else {
++        prevCert->next = currCert;
++      }
++      first++;
++      prevCert = currCert;
++      currCert = NULL;
++      stream += chain[i]; certLen -= chain[i];
++      i++;
++    }
++    sslAssert(certLen == 0);
++    psFree(cert);
++  }
++  /*
++  Check to see that if were passed in at least
++  one ended up being valid.
++  W/o at least one successfully parsed certificate
++  we can't respond Certificate Request properly.
++  */
++  if (certFile != NULL && lkeys->ownCerts == NULL) {
++    matrixStrDebugMsg("No valid own certs in %s\n",
++      (char*)certFile);
++    matrixRsaFreeKeys(lkeys);
++    return -1;
++  }
++  return 0;
++}
++#endif /* defined(USE_CLIENT_SIDE_SSL) && defined(USE_CLIENT_AUTH) */
++
+ /******************************************************************************/
+ /*
+ 	Preferred version for commercial users who make use of memory pools.
+@@ -179,12 +253,12 @@
+ 	sslKeys_t		*lkeys;
+ 	unsigned char	*privKeyMem;
+ 	int32			rc, privKeyMemLen;
+-#ifdef USE_CLIENT_SIDE_SSL
++#if defined(USE_CLIENT_SIDE_SSL) || defined(USE_CLIENT_AUTH)
+ 	sslRsaCert_t	*currCert, *prevCert = NULL;
+ 	unsigned char	*caCert, *caStream;
+ 	sslChainLen_t	chain;
+ 	int32			caCertLen, first, i;
+-#endif /* USE_CLIENT_SIDE_SSL */
++#endif /* defined(USE_CLIENT_SIDE_SSL) || defined(USE_CLIENT_AUTH) */
+ 
+ 	*keys = lkeys = psMalloc(pool, sizeof(sslKeys_t));
+ 	if (lkeys == NULL) {
+@@ -200,6 +274,16 @@
+ 		matrixRsaFreeKeys(lkeys);
+ 		return rc;
+ 	}
++
++#if defined(USE_CLIENT_SIDE_SSL) && defined(USE_CLIENT_AUTH)
++  rc = matrixRsaReadKeysExCertFile(pool, lkeys, certFile);
++  if (rc < 0 ) {
++    matrixRsaFreeKeys(lkeys);
++    return rc;
++  }
++#endif /* defined(USE_CLIENT_SIDE_SSL) && defined(USE_CLIENT_AUTH) */
++
++
+ /*
+ 	The first cert in certFile must be associated with the provided
+ 	private key. 
+@@ -224,7 +308,7 @@
+ 		}
+ 		psFree(privKeyMem);
+ 	}
+-#ifdef USE_CLIENT_SIDE_SSL
++#if defined(USE_CLIENT_SIDE_SSL) || defined(USE_CLIENT_AUTH)
+ /*
+ 	Now deal with Certificate Authorities
+ */
+@@ -276,7 +360,7 @@
+ 		matrixRsaFreeKeys(lkeys);
+ 		return -1;
+ 	}
+-#endif /* USE_CLIENT_SIDE_SSL */
++#endif /* defined(USE_CLIENT_SIDE_SSL) || defined(USE_CLIENT_AUTH) */
+ 	return 0; 
+ }
+ 
+@@ -539,9 +623,9 @@
+ 	sslLocalCert_t	*current, *next;
+ 	unsigned char	*binPtr;
+ 	int32			len, lenOh, i;
+-#ifdef USE_CLIENT_SIDE_SSL
++#if defined(USE_CLIENT_SIDE_SSL) || defined(USE_CLIENT_AUTH)
+ 	sslRsaCert_t	*currentCA, *nextCA;
+-#endif /* USE_CLIENT_SIDE_SSL */
++#endif /* defined(USE_CLIENT_SIDE_SSL) || defined(USE_CLIENT_AUTH) */
+ 
+ 	*keys = lkeys = psMalloc(pool, sizeof(sslKeys_t));
+ 	if (lkeys == NULL) {
+@@ -607,7 +691,7 @@
+ /*
+ 	Trusted CAs
+ */
+-#ifdef USE_CLIENT_SIDE_SSL
++#if defined(USE_CLIENT_SIDE_SSL) || defined(USE_CLIENT_AUTH)
+ 	if (trustedCABuf != NULL && trustedCALen > 0) {
+ 		i = 0;
+ 		binPtr = trustedCABuf;
+@@ -653,7 +737,7 @@
+ 			i++;
+ 		}
+ 	}
+-#endif /* USE_CLIENT_SIDE_SSL */
++#endif /* defined(USE_CLIENT_SIDE_SSL) || defined(USE_CLIENT_AUTH) */
+ 
+ 	return 0;
+ }
+@@ -960,6 +1044,7 @@
+ 		if (curr->extensions.ak.keyId)	psFree(curr->extensions.ak.keyId);
+ 		if (curr->extensions.ak.serialNum)
+ 						psFree(curr->extensions.ak.serialNum);
++    /* //psFreeDNStruct is an unified way to free DN 
+ 		if (curr->extensions.ak.attribs.commonName)
+ 						psFree(curr->extensions.ak.attribs.commonName);
+ 		if (curr->extensions.ak.attribs.country)
+@@ -972,6 +1057,8 @@
+ 						psFree(curr->extensions.ak.attribs.organization);
+ 		if (curr->extensions.ak.attribs.orgUnit)
+ 						psFree(curr->extensions.ak.attribs.orgUnit);
++            */
++    psFreeDNStruct(&curr->extensions.ak.attribs);
+ #endif /* SSL_FULL_CERT_PARSE */
+ 		next = curr->next;
+ 		psFree(curr);
+diff -uNr --exclude doc --exclude httpsClient ../matrixssl-1-8-6-open/src/sslDecode.c matrixssl/src/sslDecode.c
+--- ../matrixssl-1-8-6-open/src/sslDecode.c	2008-08-29 00:54:46.000000000 +0300
++++ matrixssl/src/sslDecode.c	2009-04-03 19:57:33.000000000 +0300
+@@ -489,16 +489,20 @@
+ 	uint32			cipher = 0;
+ 	unsigned char	hsMsgHash[SSL_MD5_HASH_SIZE + SSL_SHA1_HASH_SIZE];
+ 
++#ifdef USE_CLIENT_AUTH
++  unsigned char	certVerifyHash[SSL_MD5_HASH_SIZE + SSL_SHA1_HASH_SIZE];
++#endif /*USE_CLIENT_AUTH*/
++
+ #ifdef USE_SERVER_SIDE_SSL
+ 	unsigned char	*p;
+ 	int32			suiteLen, challengeLen, pubKeyLen, extLen;
+ #endif /* USE_SERVER_SIDE_SSL */
+ 
+-#ifdef USE_CLIENT_SIDE_SSL
++#if defined(USE_CLIENT_SIDE_SSL) || defined(USE_CLIENT_AUTH)
+ 	int32			sessionIdLen, certMatch, certTypeLen;
+ 	int32			valid, certLen, certChainLen, anonCheck;
+ 	sslRsaCert_t	*cert, *currentCert, *subjectCert;
+-#endif /* USE_CLIENT_SIDE_SSL */
++#endif /* defined(USE_CLIENT_SIDE_SSL) || defined(USE_CLIENT_AUTH) */
+ 
+ 	rc = SSL_SUCCESS;
+ 	c = (unsigned char*)inbuf;
+@@ -574,6 +578,18 @@
+ 			(ssl->flags & SSL_FLAGS_SERVER) ? 0 : SSL_FLAGS_SERVER);
+ 	}
+ 
++#ifdef USE_CLIENT_AUTH
++  /*
++  We need to get a copy of the message hashes to compare to those sent
++  in the Certificate Verify message (which does not include a hash of itself)
++  before we update the handshake hashes
++  */
++  if (ssl->hsState == SSL_HS_CERTIFICATE_VERIFY) 
++  {
++    sslSnapshotCertificateVerifyHSHash(ssl, certVerifyHash);
++  }
++#endif /*USE_CLIENT_AUTH*/
++
+ /*
+ 	Process the handshake header and update the ongoing handshake hash
+ 	SSLv3:
+@@ -890,8 +906,18 @@
+ */
+ 		if (ssl->flags & SSL_FLAGS_RESUMED) {
+ 			ssl->hsState = SSL_HS_FINISHED;
+-		} else {
+-			ssl->hsState = SSL_HS_CLIENT_KEY_EXCHANGE;
++		} else 
++    {
++#ifdef USE_CLIENT_AUTH
++      if (ssl->flags & SSL_FLAGS_CLIENT_AUTH)
++      {
++        ssl->hsState = SSL_HS_CERTIFICATE;
++      }
++      else
++#endif /*USE_CLIENT_AUTH*/
++      {
++        ssl->hsState = SSL_HS_CLIENT_KEY_EXCHANGE;
++      }
+ 		}
+ /*
+ 		Now that we've parsed the ClientHello, we need to tell the caller that
+@@ -974,10 +1000,52 @@
+ 		matrixUpdateSession(ssl);
+ 
+ 		c += pubKeyLen;
+-		ssl->hsState = SSL_HS_FINISHED;
+ 
++#ifdef USE_CLIENT_AUTH
++    if (ssl->flags & SSL_FLAGS_CLIENT_AUTH)
++    {
++      ssl->hsState = SSL_HS_CERTIFICATE_VERIFY;
++    }
++    else
++#endif /*USE_CLIENT_AUTH*/
++    {
++      ssl->hsState = SSL_HS_FINISHED;
++    }
+ 
+ 		break;
++#ifdef USE_CLIENT_AUTH
++  case SSL_HS_CERTIFICATE_VERIFY:
++    {
++      unsigned char	sigOut[sizeof(certVerifyHash)/sizeof(certVerifyHash[0])];
++      int32 sigLen = hsLen;
++
++
++      /* Not sure which piece of standard dictates having
++      these two leading bytes before the actual signature */
++      c += 2; 
++      sigLen -= 2;
++      if (0 != matrixRsaDecryptPub(ssl->hsPool, &(ssl->sec.cert->publicKey), c,
++        sigLen, sigOut, sizeof(sigOut)/sizeof(sigOut[0])))
++      {
++        ssl->err = SSL_ALERT_ILLEGAL_PARAMETER;
++        matrixStrDebugMsg("RSA decryption failed in Certificate Verify\n",
++          NULL);
++        return SSL_ERROR;
++      }
++      c += sigLen;
++      if (0 != memcmp(certVerifyHash, sigOut, sizeof(sigOut)))
++      {
++        ssl->err = SSL_ALERT_HANDSHAKE_FAILURE;
++        matrixStrDebugMsg("Hashes do not match in Certificate Verify\n",
++          NULL);
++        return SSL_ERROR;
++      }
++
++      ssl->hsState = SSL_HS_FINISHED;
++    }
++    break;
++#endif /*USE_CLIENT_AUTH*/
++
+ #endif /* USE_SERVER_SIDE_SSL */
+ 
+ 	case SSL_HS_FINISHED:
+@@ -1031,7 +1099,7 @@
+ 				rc = SSL_PROCESS_DATA;
+ 			}
+ 		}
+-#ifdef USE_CLIENT_SIDE_SSL
++#if defined(USE_CLIENT_SIDE_SSL) 
+ /*
+ 		Free handshake pool, of which the cert is the primary member.
+ 		There is also an attempt to free the handshake pool during
+@@ -1047,7 +1115,7 @@
+ #endif /* USE_CLIENT_SIDE */
+ 		break;
+ 
+-#ifdef USE_CLIENT_SIDE_SSL
++#if defined(USE_CLIENT_SIDE_SSL) 
+ 	case SSL_HS_HELLO_REQUEST:
+ /*	
+ 		No body message and the only one in record flight
+@@ -1377,12 +1445,32 @@
+ 				matrixStrDebugMsg("Invalid CertificateRequest message\n", NULL);
+ 				return SSL_ERROR;
+ 			}
++      
++#if defined(USE_CLIENT_SIDE_SSL) && defined(USE_CLIENT_AUTH)
++      {
++        sslRsaCert_t		*curr, *next;
++
++        curr = ssl->keys->ownCerts;
++        while (curr) {
++          if (curr->issuer.DNbinLen == certLen
++            && 0 == memcmp(c, curr->issuer.DNbin, certLen)
++            )
++          {
++            ssl->sec.certMatch = 1;
++            break;
++          }
++          next = curr->next;
++          curr = next;
++        }
++      }
++#endif /* defined(USE_CLIENT_SIDE_SSL) && defined(USE_CLIENT_AUTH) */
++
+ 			c += certLen;
+ 			certChainLen -= (2 + certLen);
+ 		}
+ 		ssl->hsState = SSL_HS_SERVER_HELLO_DONE;
+ 		break;
+-#endif /* USE_CLIENT_SIDE_SSL */
++#endif /* defined(USE_CLIENT_SIDE_SSL)  */
+ 
+ 	case SSL_HS_SERVER_KEY_EXCHANGE:
+ 		ssl->err = SSL_ALERT_UNEXPECTED_MESSAGE;
+diff -uNr --exclude doc --exclude httpsClient ../matrixssl-1-8-6-open/src/sslEncode.c matrixssl/src/sslEncode.c
+--- ../matrixssl-1-8-6-open/src/sslEncode.c	2008-08-29 00:59:30.000000000 +0300
++++ matrixssl/src/sslEncode.c	2009-04-04 02:51:56.000000000 +0300
+@@ -46,11 +46,22 @@
+ 			int32 padLen, unsigned char *encryptStart, sslBuf_t *out,
+ 			unsigned char **c);
+ 
+-#ifdef USE_CLIENT_SIDE_SSL
++#if defined(USE_CLIENT_SIDE_SSL) 
+ static int32 writeClientKeyExchange(ssl_t *ssl, sslBuf_t *out);
+-#endif /* USE_CLIENT_SIDE_SSL */
++
++#if defined(USE_CLIENT_AUTH)
++static int32 writeCertificateVerify(ssl_t *ssl, sslBuf_t *out);
++#endif /*defined(USE_CLIENT_AUTH)*/
++
++#endif /* defined(USE_CLIENT_SIDE_SSL)  */
+ 
+ #ifdef USE_SERVER_SIDE_SSL
++
++#ifdef USE_CLIENT_AUTH
++static int32 getCADNSize(ssl_t *ssl);
++static int32 writeCertificateRequest(ssl_t *ssl, sslBuf_t *out);
++#endif // USE_CLIENT_AUTH
++
+ static int32 writeServerHello(ssl_t *ssl, sslBuf_t *out);
+ static int32 writeServerHelloDone(ssl_t *ssl, sslBuf_t *out);
+ #endif /* USE_SERVER_SIDE_SSL */
+@@ -124,9 +135,9 @@
+ 	int32			totalCertLen, i;
+ 	sslLocalCert_t	*cert;
+ #endif /* USE_SERVER_SIDE_SSL */
+-#ifdef USE_CLIENT_SIDE_SSL
++#if defined(USE_CLIENT_SIDE_SSL) 
+ 	int32			ckeSize;
+-#endif /* USE_CLIENT_SIDE_SSL */
++#endif /* defined(USE_CLIENT_SIDE_SSL)  */
+ 
+ /*
+ 	We may be trying to encode an alert response if there is an error marked
+@@ -154,6 +165,12 @@
+ 	send the messages that would prompt that result on the client
+ */
+ #ifdef USE_SERVER_SIDE_SSL
++
++  /* We also may be waiting for Certificate if client authentication
++  is used */
++#ifdef USE_CLIENT_AUTH     
++  case SSL_HS_CERTIFICATE:
++#endif /*USE_CLIENT_AUTH     */
+ 	case SSL_HS_CLIENT_KEY_EXCHANGE:
+ 
+ /*
+@@ -171,6 +188,13 @@
+ 					3 * ssl->hshakeHeadLen +
+ 					38 + SSL_MAX_SESSION_ID_SIZE +  /* server hello */
+ 					3 + (i * 3) + totalCertLen; /* certificate */
++#ifdef USE_CLIENT_AUTH
++       if (ssl->flags & SSL_FLAGS_CLIENT_AUTH) 
++       {
++         messageSize +=  ssl->recordHeadLen + ssl->hshakeHeadLen
++           +  2 +  2 + getCADNSize(ssl);
++       }
++#endif /*USE_CLIENT_AUTH*/
+ 
+ 
+ 			messageSize += secureWriteAdditions(ssl, 3);
+@@ -190,6 +214,12 @@
+ 					rc = writeCertificate(ssl, out, 1);
+ 				}
+ 
++#ifdef USE_CLIENT_AUTH
++        if (rc == SSL_SUCCESS && ssl->flags & SSL_FLAGS_CLIENT_AUTH) 
++        {
++          rc = writeCertificateRequest(ssl, out);
++        }
++#endif /*USE_CLIENT_AUTH*/
+ 
+ 		if (rc == SSL_SUCCESS) {
+ 			rc = writeServerHelloDone(ssl, out);
+@@ -244,7 +274,7 @@
+ 			}
+ 		}
+ #endif /* USE_SERVER_SIDE_SSL */
+-#ifdef USE_CLIENT_SIDE_SSL
++#if defined(USE_CLIENT_SIDE_SSL) 
+ /*
+ 		Encode entry point for client side final flight encodes.
+ 		First task here is to find out size of ClientKeyExchange message
+@@ -344,6 +374,15 @@
+ 			if (rc == SSL_SUCCESS) {
+ 				rc = writeClientKeyExchange(ssl, out);
+ 			}
++
++#if defined(USE_CLIENT_SIDE_SSL) && defined(USE_CLIENT_AUTH)
++      if (rc == SSL_SUCCESS
++        && ssl->flags & SSL_FLAGS_CLIENT_AUTH
++        && ssl->sec.certMatch) {
++          rc = writeCertificateVerify(ssl, out);
++      }
++#endif /*defined(USE_CLIENT_SIDE_SSL) && defined(USE_CLIENT_AUTH)*/
++
+ 			if (rc == SSL_SUCCESS) {
+ 				rc = writeChangeCipherSpec(ssl, out);
+ 			}
+@@ -351,7 +390,7 @@
+ 				rc = writeFinished(ssl, out);
+ 			}
+ 		}
+-#endif /* USE_CLIENT_SIDE_SSL */
++#endif /* defined(USE_CLIENT_SIDE_SSL)  */
+ 		break;
+ 	}
+ 	if (rc == SSL_ERROR) {
+@@ -591,6 +630,86 @@
+ 	return SSL_SUCCESS;
+ }
+ 
++#ifdef USE_CLIENT_AUTH
++static int32 getCADNSize(ssl_t *ssl)
++{
++  int32 size = 0;
++
++  if (ssl->keys && ssl->keys->caCerts)
++  {
++    sslRsaCert_t	*cert = ssl->keys->caCerts;
++    while (0 != cert)
++    {
++      size +=  cert->subject.DNbinLen + 2;
++      cert = cert->next;
++    }
++  }
++  return size;
++}
++
++/******************************************************************************/
++/*
++CertificateRequest message 
++
++Currently one that accommodates SSL_HS_CERTIFICATE_REQUEST parser in sslDecode. 
++*/
++static int32 writeCertificateRequest(ssl_t *ssl, sslBuf_t *out)
++{
++  unsigned char	*c, *end, *encryptStart;
++  char			padLen;
++  int32				messageSize, rc;
++  int32     dnSize = getCADNSize(ssl);
++
++  c = out->end;
++  end = out->buf + out->size;
++  messageSize = ssl->recordHeadLen + ssl->hshakeHeadLen
++    +  2   // certificate_types
++    +  2 // certificate_authorities size
++    + dnSize;
++
++  if ((rc = writeRecordHeader(ssl, SSL_RECORD_TYPE_HANDSHAKE,
++    SSL_HS_CERTIFICATE_REQUEST, &messageSize, &padLen,
++    &encryptStart, &end, &c)) < 0) {
++      return rc;
++  }
++  // certificate_types: matrixSSL clients only support RSA sign 
++  *c = 1; c++;
++  *c = RSA_SIGN; c++;
++
++  // certificate_authorities 
++  *c = (dnSize & 0xFF00) >> 8; c++;
++  *c = (dnSize & 0xFF); c++;
++
++  if (ssl->keys && ssl->keys->caCerts)
++  {
++    sslRsaCert_t	*cert = ssl->keys->caCerts;
++    while (0 != cert)
++    {
++      *c = (cert->subject.DNbinLen & 0xFF00) >> 8; c++;
++      *c = (cert->subject.DNbinLen & 0xFF); c++;
++
++      memcpy(c, cert->subject.DNbin, cert->subject.DNbinLen);
++      c += cert->subject.DNbinLen;
++
++      cert = cert->next;
++    }
++  }
++
++  if ((rc = encryptRecord(ssl, SSL_RECORD_TYPE_HANDSHAKE, messageSize,
++    padLen, encryptStart, out, &c)) < 0) {
++      return rc;
++  }
++
++  if (c - out->end != messageSize) {
++    matrixStrDebugMsg("Error generating certificate request for write\n", NULL);
++    return SSL_ERROR;
++  }
++  out->end = c;
++  return SSL_SUCCESS;
++}
++
++#endif /* USE_CLIENT_AUTH */
++
+ /******************************************************************************/
+ /*
+ 	ServerHelloDone message is a blank handshake message
+@@ -847,7 +966,7 @@
+ 	}
+ 	out->end = c;
+ 
+-#ifdef USE_CLIENT_SIDE_SSL
++#if defined(USE_CLIENT_SIDE_SSL) 
+ /*
+ 	Free handshake pool, of which the cert is the primary member.
+ 	There is also an attempt to free the handshake pool during
+@@ -897,7 +1016,7 @@
+ 	return SSL_SUCCESS;
+ }
+ 
+-#ifdef USE_CLIENT_SIDE_SSL
++#if defined(USE_CLIENT_SIDE_SSL) 
+ /******************************************************************************/
+ /*
+ 	Write out the ClientHello message to a buffer
+@@ -1138,8 +1257,62 @@
+ 	return SSL_SUCCESS;
+ }
+ 
++#if defined(USE_CLIENT_AUTH)
++/******************************************************************************/
++/*
++Write a CertificateVerify message.
++*/
++static int32 writeCertificateVerify(ssl_t *ssl, sslBuf_t *out)
++{
++  unsigned char	*c, *end, *encryptStart;
++  char			padLen;
++  int32				messageSize, rc;
++  unsigned char	certVerifyHash[SSL_MD5_HASH_SIZE + SSL_SHA1_HASH_SIZE];
++
++  c = out->end;
++  end = out->buf + out->size;
++  messageSize = ssl->recordHeadLen + ssl->hshakeHeadLen 
++    + 2 + ssl->keys->cert.privKey->size;
++
++  if ((rc = writeRecordHeader(ssl, SSL_RECORD_TYPE_HANDSHAKE, SSL_HS_CERTIFICATE_VERIFY,
++    &messageSize, &padLen, &encryptStart, &end, &c)) < 0) {
++      return rc;
++  }
++
++  sslSnapshotCertificateVerifyHSHash(ssl, certVerifyHash);
++
++  /* Not sure which piece of standard dictates having
++  these two leading bytes before the actual signature */
++  *c = 0; c++;
++  *c = 0; c++;
++  if (matrixRsaEncryptPriv(ssl->hsPool, ssl->keys->cert.privKey, 
++    certVerifyHash, sizeof(certVerifyHash)/sizeof(certVerifyHash[0]), 
++    c, ssl->keys->cert.privKey->size) != ssl->keys->cert.privKey->size
++    )
++  {
++    ssl->err = SSL_ALERT_ILLEGAL_PARAMETER;
++    matrixStrDebugMsg("RSA encryption failed in Certificate Verify\n",
++      NULL);
++    return SSL_ERROR;
++  }
++  c += ssl->keys->cert.privKey->size;
++
++  if ((rc = encryptRecord(ssl, SSL_RECORD_TYPE_HANDSHAKE, messageSize,
++    padLen, encryptStart, out, &c)) < 0) {
++      return rc;
++  }
++
++  if (c - out->end != messageSize) {
++    matrixStrDebugMsg("Error generating certificate verify for write\n", NULL);
++    return SSL_ERROR;
++  }
++  out->end = c;
++
++  return SSL_SUCCESS;
++}
++#endif /*defined(USE_CLIENT_AUTH)*/
+ 
+-#else /* USE_CLIENT_SIDE_SSL */
++#else /* defined(USE_CLIENT_SIDE_SSL)  */
+ /******************************************************************************/
+ /*
+ 	Stub out this function rather than ifdef it out in the public header
+@@ -1150,7 +1323,7 @@
+ 	matrixStrDebugMsg("Library not built with USE_CLIENT_SIDE_SSL\n", NULL);
+ 	return -1;
+ }
+-#endif /* USE_CLIENT_SIDE_SSL */
++#endif /* defined(USE_CLIENT_SIDE_SSL) */
+ 
+ 
+ /******************************************************************************/
+diff -uNr --exclude doc --exclude httpsClient ../matrixssl-1-8-6-open/src/sslv3.c matrixssl/src/sslv3.c
+--- ../matrixssl-1-8-6-open/src/sslv3.c	2008-08-27 01:36:06.000000000 +0300
++++ matrixssl/src/sslv3.c	2009-04-03 19:57:34.000000000 +0300
+@@ -220,6 +220,56 @@
+ 	return ret;
+ }
+ 
++#ifdef USE_CLIENT_AUTH
++
++/******************************************************************************/
++/*
++Combine the running hash of the handshake messages with some constants
++and mix them up a bit more.  Output the result to the given buffer.
++This data will be part of the Certificate Request handshake message.
++*/
++int32 sslGenerateCertificateVerifyHash(sslMd5Context_t *md5, sslSha1Context_t *sha1, 
++                              unsigned char *masterSecret,
++                              unsigned char *out)
++{
++  sslMd5Context_t			omd5;
++  sslSha1Context_t		osha1;
++
++  unsigned char	ihash[SSL_SHA1_HASH_SIZE];
++
++  /*
++  CertificateVerify.signature.md5_hash
++  MD5(master_secret + pad_2 +
++  MD5(handshake_messages + master_secret + pad_1));
++  */
++  matrixMd5Update(md5, masterSecret, SSL_HS_MASTER_SIZE);
++  matrixMd5Update(md5, pad1, sizeof(pad1));
++  matrixMd5Final(md5, ihash);
++
++  matrixMd5Init(&omd5);
++  matrixMd5Update(&omd5, masterSecret, SSL_HS_MASTER_SIZE);
++  matrixMd5Update(&omd5, pad2, sizeof(pad2));
++  matrixMd5Update(&omd5, ihash, SSL_MD5_HASH_SIZE);
++  matrixMd5Final(&omd5, out);
++  /*
++  sha_hash        SHA(master_secret + pad2 +
++  SHA(handshake_messages + Sender +
++  master_secret + pad1));
++  */
++  matrixSha1Update(sha1, masterSecret, SSL_HS_MASTER_SIZE);
++  matrixSha1Update(sha1, pad1, 40);
++  matrixSha1Final(sha1, ihash);
++
++  matrixSha1Init(&osha1);
++  matrixSha1Update(&osha1, masterSecret, SSL_HS_MASTER_SIZE);
++  matrixSha1Update(&osha1, pad2, 40);
++  matrixSha1Update(&osha1, ihash, SSL_SHA1_HASH_SIZE);
++  matrixSha1Final(&osha1, out + SSL_MD5_HASH_SIZE);
++
++  return SSL_MD5_HASH_SIZE + SSL_SHA1_HASH_SIZE;
++}
++#endif /*USE_CLIENT_AUTH*/
++
+ /******************************************************************************/
+ /*
+ 	Combine the running hash of the handshake mesages with some constants
